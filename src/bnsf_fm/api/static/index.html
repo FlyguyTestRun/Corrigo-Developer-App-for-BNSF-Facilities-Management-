@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BNSF Facilities Intelligence</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>&#x1F527;</text></svg>">
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #14181d; --muted: #5d6773;
+    --line: #e2e6ea; --accent: #1f5f8b;
+    --sev-severe: #b3261e; --sev-moderate: #b26a00; --sev-watch: #5d6773;
+    --ok: #1e7a48;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14181d; --panel: #1c2127; --ink: #e8ecf0; --muted: #98a2ad;
+      --line: #2a313a; --accent: #6fb3dd;
+      --sev-severe: #ef8279; --sev-moderate: #e0a24a; --sev-watch: #98a2ad;
+      --ok: #64c090;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    padding: 20px 24px; border-bottom: 1px solid var(--line);
+    background: var(--panel); display: flex; flex-wrap: wrap;
+    align-items: baseline; gap: 16px;
+  }
+  h1 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -0.01em; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  nav { margin-left: auto; display: flex; gap: 4px; flex-wrap: wrap; }
+  nav button {
+    font: inherit; font-size: 13px; padding: 6px 13px; border-radius: 999px;
+    border: 1px solid var(--line); background: transparent; color: var(--muted);
+    cursor: pointer;
+  }
+  nav button[aria-selected="true"] {
+    background: var(--accent); border-color: var(--accent); color: #fff;
+  }
+  main { padding: 24px; max-width: 1240px; margin: 0 auto; }
+  section[hidden] { display: none; }
+  .cards { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(165px, 1fr)); margin-bottom: 22px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 15px 17px;
+  }
+  .card .label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em;
+    color: var(--muted); margin-bottom: 7px;
+  }
+  .card .value { font-size: 27px; font-weight: 620; letter-spacing: -0.02em; }
+  .card .note { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 18px 20px; margin-bottom: 20px;
+  }
+  .panel h2 { margin: 0 0 4px; font-size: 15px; font-weight: 620; }
+  .panel .lede { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+  .bars { display: grid; gap: 7px; }
+  .bar-row { display: grid; grid-template-columns: 96px 46px 1fr; align-items: center; gap: 10px; font-size: 13px; }
+  .bar-row .n { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .bar { height: 17px; border-radius: 3px; background: var(--accent); opacity: 0.85; min-width: 2px; }
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 8px 11px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.wide { white-space: normal; min-width: 220px; }
+  .sev { font-weight: 600; font-size: 12px; }
+  .sev.severe { color: var(--sev-severe); }
+  .sev.moderate { color: var(--sev-moderate); }
+  .sev.watch { color: var(--sev-watch); }
+  .flag-ok { color: var(--ok); }
+  .flag-bad { color: var(--sev-severe); font-weight: 600; }
+  .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 15px; font-size: 13px; }
+  select, input {
+    font: inherit; font-size: 13px; padding: 5px 9px; border-radius: 6px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+  }
+  .muted { color: var(--muted); }
+  .empty { color: var(--muted); padding: 22px 0; text-align: center; }
+  footer { padding: 0 24px 40px; max-width: 1240px; margin: 0 auto; color: var(--muted); font-size: 12px; }
+  .stop { border-left: 3px solid var(--accent); padding: 3px 0 3px 14px; margin-bottom: 15px; }
+  .stop .head { font-weight: 600; }
+  .stop .meta { font-size: 12.5px; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>BNSF Fort Worth — Facilities Intelligence</h1>
+    <div class="sub" id="subtitle">loading…</div>
+  </div>
+  <nav>
+    <button data-tab="backlog" aria-selected="true">Backlog</button>
+    <button data-tab="team" aria-selected="false">Team</button>
+    <button data-tab="route" aria-selected="false">Route</button>
+    <button data-tab="inventory" aria-selected="false">Inventory</button>
+    <button data-tab="assets" aria-selected="false">Assets</button>
+  </nav>
+</header>
+
+<main>
+  <section id="tab-backlog">
+    <div class="cards" id="backlog-cards"></div>
+    <div class="panel">
+      <h2>Aging distribution</h2>
+      <p class="lede">How long open work orders have been open.</p>
+      <div class="bars" id="aging-bars"></div>
+    </div>
+    <div class="panel">
+      <h2>Stalled work orders</h2>
+      <p class="lede">
+        Open long enough that someone should have touched them, with almost no labor
+        logged. This is the list that separates a hard job from a work order nobody
+        is working.
+      </p>
+      <div class="table-wrap"><table id="stalled-table"></table></div>
+    </div>
+  </section>
+
+  <section id="tab-team" hidden>
+    <div class="controls">
+      <label>Window
+        <select id="kpi-window">
+          <option value="30">30 days</option>
+          <option value="90" selected>90 days</option>
+          <option value="180">180 days</option>
+          <option value="365">365 days</option>
+        </select>
+      </label>
+      <span class="muted">Names are pseudonymized.</span>
+    </div>
+    <div class="cards" id="team-cards"></div>
+    <div class="panel">
+      <h2>By technician</h2>
+      <p class="lede">
+        Volume-normalized: median cycle time and SLA-met rate, not raw counts, so
+        nobody is penalized for being handed the hard work.
+      </p>
+      <div class="table-wrap"><table id="tech-table"></table></div>
+    </div>
+  </section>
+
+  <section id="tab-route" hidden>
+    <div class="controls">
+      <label>Start from <select id="route-start"></select></label>
+      <label>Stops <input id="route-stops" type="number" value="6" min="1" max="20" style="width:66px"></label>
+    </div>
+    <div class="panel">
+      <h2>Suggested sequence</h2>
+      <p class="lede">
+        Ordered by walking proximity, with emergency and past-SLA work pulled forward.
+      </p>
+      <div id="route-list"></div>
+    </div>
+  </section>
+
+  <section id="tab-inventory" hidden>
+    <div class="cards" id="inv-cards"></div>
+    <div class="panel">
+      <h2>Stock</h2>
+      <p class="lede">
+        Burn rate is derived from parts consumed on closed work orders, so days of
+        cover reflects work actually performed.
+      </p>
+      <div class="table-wrap"><table id="inv-table"></table></div>
+    </div>
+  </section>
+
+  <section id="tab-assets" hidden>
+    <div class="controls">
+      <input id="asset-q" type="search" placeholder="Search tag, name, make, model…" style="min-width:280px">
+      <select id="asset-building"><option value="">All buildings</option></select>
+    </div>
+    <div class="panel">
+      <h2>Registry</h2>
+      <p class="lede">Click a row for full service history.</p>
+      <div class="table-wrap"><table id="asset-table"></table></div>
+    </div>
+    <div class="panel" id="asset-detail" hidden></div>
+  </section>
+</main>
+
+<footer>
+  Read-only view over local Corrigo data. Nothing here writes to Corrigo.
+  Technician names are pseudonymized by default.
+</footer>
+
+<script>
+const api = (path, params) => {
+  const url = new URL(path, location.origin);
+  Object.entries(params || {}).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, v);
+  });
+  return fetch(url).then(r => {
+    if (!r.ok) throw new Error(`${path} → ${r.status}`);
+    return r.json();
+  });
+};
+
+const el = (tag, attrs = {}, ...kids) => {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") node.className = v;
+    else if (k === "html") node.innerHTML = v;
+    else node.setAttribute(k, v);
+  }
+  kids.flat().forEach(kid =>
+    node.append(kid instanceof Node ? kid : document.createTextNode(String(kid))));
+  return node;
+};
+
+const card = (label, value, note) =>
+  el("div", { class: "card" },
+    el("div", { class: "label" }, label),
+    el("div", { class: "value" }, value),
+    note ? el("div", { class: "note" }, note) : []);
+
+function table(target, columns, rows, onRow) {
+  const node = document.querySelector(target);
+  node.replaceChildren();
+  if (!rows.length) {
+    node.replaceWith(el("div", { class: "empty", id: target.slice(1) }, "Nothing to show."));
+    return;
+  }
+  const head = el("tr", {}, columns.map(c =>
+    el("th", { class: c.num ? "num" : "" }, c.label)));
+  node.append(el("thead", {}, head));
+  const body = el("tbody");
+  rows.forEach(row => {
+    const tr = el("tr", {}, columns.map(c => {
+      const cell = c.render ? c.render(row) : row[c.key];
+      const classes = [c.num ? "num" : "", c.wide ? "wide" : ""].filter(Boolean).join(" ");
+      return cell instanceof Node
+        ? el("td", { class: classes }, cell)
+        : el("td", { class: classes }, cell ?? "—");
+    }));
+    if (onRow) { tr.style.cursor = "pointer"; tr.onclick = () => onRow(row); }
+    body.append(tr);
+  });
+  node.append(body);
+}
+
+async function loadBacklog() {
+  const data = await api("/backlog");
+  document.querySelector("#backlog-cards").replaceChildren(
+    card("Open work orders", data.total_open, `median ${data.median_days_open} days old`),
+    card("Past SLA", data.sla_breached,
+         `${Math.round(data.sla_breached / Math.max(data.total_open, 1) * 100)}% of open`),
+    card("Stalled", data.stalled_count, "little or no labor logged"),
+    card("Days at risk", Math.round(data.stalled_days_at_risk).toLocaleString(),
+         "calendar time sitting in stalled work"),
+    card("Oldest", `${Math.round(data.oldest_days_open)}d`, "longest open work order"),
+  );
+
+  const max = Math.max(...Object.values(data.buckets), 1);
+  document.querySelector("#aging-bars").replaceChildren(
+    ...Object.entries(data.buckets).map(([label, n]) =>
+      el("div", { class: "bar-row" },
+        el("span", {}, label),
+        el("span", { class: "n" }, n),
+        el("div", { class: "bar", style: `width:${(n / max) * 100}%` }))));
+
+  table("#stalled-table", [
+    { label: "WO", key: "number" },
+    { label: "Days open", key: "days_open", num: true },
+    { label: "Hours logged", key: "hours_logged", num: true },
+    { label: "Severity", render: r => el("span", { class: `sev ${r.severity}` }, r.severity) },
+    { label: "Priority", key: "priority" },
+    { label: "Status", key: "status" },
+    { label: "Title", key: "title", wide: true },
+  ], data.stalled);
+}
+
+async function loadTeam() {
+  const window_days = document.querySelector("#kpi-window").value;
+  const data = await api("/kpis", { window_days });
+  const pct = v => `${Math.round(v * 100)}%`;
+  document.querySelector("#team-cards").replaceChildren(
+    card("Completed", data.completed, `in ${data.window_days} days`),
+    card("Opened", data.opened,
+         `backlog ${data.backlog_growth >= 0 ? "+" : ""}${data.backlog_growth}`),
+    card("Median cycle", `${data.median_cycle_days}d`, "open to close"),
+    card("SLA met", pct(data.sla_met_rate), "of completed work"),
+    card("First-time fix", pct(data.first_time_fix_rate), "no repeat within 30 days"),
+    card("Preventive", pct(data.preventive_share), "of work opened"),
+  );
+  table("#tech-table", [
+    { label: "Tech", key: "technician" },
+    { label: "Trade", key: "trade" },
+    { label: "Completed", key: "completed", num: true },
+    { label: "Open now", key: "open_now", num: true },
+    { label: "Median cycle", render: r => `${r.median_cycle_days}d`, num: true },
+    { label: "Hours", key: "hours_logged", num: true },
+    { label: "Hrs / job", key: "hours_per_completed", num: true },
+    { label: "SLA met", render: r => `${Math.round(r.sla_met_rate * 100)}%`, num: true },
+    { label: "Stalled", render: r => r.stalled_open
+        ? el("span", { class: "flag-bad" }, r.stalled_open) : "0", num: true },
+  ], data.technicians);
+}
+
+async function loadRoute() {
+  const data = await api("/route", {
+    start_building: document.querySelector("#route-start").value,
+    max_stops: document.querySelector("#route-stops").value,
+  });
+  const list = document.querySelector("#route-list");
+  if (!data.stops.length) {
+    list.replaceChildren(el("div", { class: "empty" }, "No open work orders to sequence."));
+    return;
+  }
+  list.replaceChildren(
+    el("p", { class: "muted" },
+      `${data.stops.length} stops · ${Math.round(data.total_travel_minutes)} minutes walking`),
+    ...data.stops.map((s, i) => {
+      const staged = (s.parts_to_stage || [])
+        .map(p => p.sku + (p.in_stock ? "" : " (out of stock)")).join(", ");
+      return el("div", { class: "stop" },
+        el("div", { class: "head" }, `${i + 1}. WO ${s.number} — ${s.title}`),
+        el("div", { class: "meta" }, s.location || "location unknown"),
+        el("div", { class: "meta" },
+           `+${Math.round(s.travel_minutes)} min · ${s.reason}`),
+        staged ? el("div", { class: "meta" }, `stage: ${staged}`) : []);
+    }));
+}
+
+async function loadInventory() {
+  const data = await api("/inventory");
+  document.querySelector("#inv-cards").replaceChildren(
+    card("Parts tracked", data.part_count),
+    card("At reorder point", data.reorder_count),
+    card("Restock cost", `$${data.reorder_cost.toLocaleString(undefined,
+      { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`),
+  );
+  table("#inv-table", [
+    { label: "SKU", key: "sku" },
+    { label: "Name", key: "name", wide: true },
+    { label: "On hand", key: "on_hand", num: true },
+    { label: "Reorder pt", key: "reorder_point", num: true },
+    { label: "Suggested", key: "suggested_reorder_point", num: true },
+    { label: "Burn / day", key: "daily_burn", num: true },
+    { label: "Cover", render: r => r.days_of_cover === null ? "—" : `${r.days_of_cover}d`, num: true },
+    { label: "Flag", render: r => el("span",
+        { class: r.flag === "ok" ? "flag-ok" : "flag-bad" }, r.flag) },
+  ], data.parts);
+}
+
+async function loadAssets() {
+  const rows = await api("/assets", {
+    q: document.querySelector("#asset-q").value,
+    building: document.querySelector("#asset-building").value,
+    limit: 200,
+  });
+  document.querySelector("#asset-detail").hidden = true;
+  table("#asset-table", [
+    { label: "Tag", key: "tag" },
+    { label: "Name", key: "name", wide: true },
+    { label: "Category", key: "category" },
+    { label: "Make / model", render: r => [r.manufacturer, r.model].filter(Boolean).join(" ") },
+    { label: "Criticality", key: "criticality" },
+    { label: "Location", key: "location", wide: true },
+  ], rows, showAsset);
+}
+
+async function showAsset(row) {
+  const a = await api(`/assets/${encodeURIComponent(row.tag)}`);
+  const panel = document.querySelector("#asset-detail");
+  panel.hidden = false;
+  panel.replaceChildren(
+    el("h2", {}, `${a.tag} — ${a.name}`),
+    el("p", { class: "lede" },
+      [a.location, `${a.manufacturer || ""} ${a.model || ""}`.trim(),
+       a.serial ? `s/n ${a.serial}` : null,
+       a.age_years ? `${a.age_years} y of ${a.expected_life_years} y expected` : null,
+      ].filter(Boolean).join(" · ")),
+    el("div", { class: "cards" },
+      card("Work orders", a.work_order_count, `${a.open_work_orders} open`),
+      card("Reactive", a.reactive_count, "unplanned repairs"),
+      card("Labor hours", a.total_labor_hours, "recorded against this unit"),
+      card("Signal", a.replacement_signal === "ok" ? "OK" : "Review",
+           a.replacement_signal)),
+    a.manual ? el("p", { class: "muted" }, `Manual: ${a.manual.title}`) : [],
+    a.recurring_faults?.length
+      ? el("p", { class: "muted" }, "Recurring: " +
+          a.recurring_faults.map(([t, n]) => `${t} (${n}x)`).join(", "))
+      : [],
+    el("div", { class: "table-wrap" }, el("table", { id: "asset-wo-table" })),
+  );
+  table("#asset-wo-table", [
+    { label: "Opened", render: r => r.opened.slice(0, 10) },
+    { label: "WO", key: "number" },
+    { label: "Status", key: "status" },
+    { label: "Title", key: "title", wide: true },
+    { label: "Resolution", key: "resolution", wide: true },
+  ], a.work_orders.slice(0, 25));
+  panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+const LOADERS = {
+  backlog: loadBacklog, team: loadTeam, route: loadRoute,
+  inventory: loadInventory, assets: loadAssets,
+};
+
+document.querySelectorAll("nav button").forEach(button => {
+  button.onclick = () => {
+    document.querySelectorAll("nav button").forEach(b =>
+      b.setAttribute("aria-selected", String(b === button)));
+    const tab = button.dataset.tab;
+    document.querySelectorAll("main section").forEach(s =>
+      s.hidden = s.id !== `tab-${tab}`);
+    LOADERS[tab]().catch(showError);
+  };
+});
+
+const showError = err => {
+  document.querySelector("#subtitle").textContent = `error: ${err.message}`;
+};
+
+document.querySelector("#kpi-window").onchange = () => loadTeam().catch(showError);
+document.querySelector("#route-start").onchange = () => loadRoute().catch(showError);
+document.querySelector("#route-stops").onchange = () => loadRoute().catch(showError);
+let searchTimer;
+document.querySelector("#asset-q").oninput = () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => loadAssets().catch(showError), 220);
+};
+document.querySelector("#asset-building").onchange = () => loadAssets().catch(showError);
+
+(async function init() {
+  try {
+    const [health, buildings] = await Promise.all([api("/health"), api("/buildings")]);
+    document.querySelector("#subtitle").textContent =
+      `${health.work_orders.toLocaleString()} work orders · ${health.assets} assets`;
+    document.querySelector("#route-start").replaceChildren(
+      ...buildings.map(b => el("option", { value: b }, b)));
+    document.querySelector("#asset-building").append(
+      ...buildings.map(b => el("option", { value: b }, b)));
+    await loadBacklog();
+  } catch (err) { showError(err); }
+})();
+</script>
+</body>
+</html>

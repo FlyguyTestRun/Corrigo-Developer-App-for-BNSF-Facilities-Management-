@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Refuse to build if operational data was committed
+        # The whole design rests on real Corrigo data never entering version
+        # control. A passing test suite over committed site data would be a
+        # worse outcome than a failing build, so this gate runs first.
+        run: |
+          leaked=$(git ls-files -- 'data/**' '*.db' '*.sqlite' '*.sqlite3' '.env' || true)
+          if [ -n "$leaked" ]; then
+            echo "::error::Operational data or credentials are tracked in git:"
+            echo "$leaked"
+            exit 1
+          fi
+          echo "No tracked data files or credentials."
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install
+        run: uv pip install --system -e ".[api,dev]"
+
+      - name: Test
+        run: pytest -q
+
+      - name: Smoke test the CLI end to end
+        run: |
+          bnsf-fm seed --db /tmp/ci.db --work-orders 200 --assets 40
+          bnsf-fm backlog --db /tmp/ci.db --json > /dev/null
+          bnsf-fm kpis --db /tmp/ci.db --json > /dev/null
+          bnsf-fm route --db /tmp/ci.db --json > /dev/null
+          bnsf-fm inventory --db /tmp/ci.db --json > /dev/null
