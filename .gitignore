@@ -1,0 +1,47 @@
+# ---------------------------------------------------------------------------
+# Operational data NEVER enters version control.
+#
+# This repo is the public/portfolio mirror and runs on synthetic fixtures. The
+# private pilot repo shares this file verbatim. Everything a real Corrigo
+# export, manual, or local database could land in is blocked here, and CI
+# fails the build if anything under data/ is ever staged.
+# ---------------------------------------------------------------------------
+# Note: git cannot re-include a file inside an excluded directory, so there is
+# deliberately no `!data/.gitkeep` exception here. The store creates data/ on
+# demand (Store.__init__ mkdirs the parent), so the directory need not exist in
+# version control.
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.csv
+*.xlsx
+*.xls
+manuals/
+
+# Credentials
+.env
+.env.*
+!.env.example
+*.pem
+secrets.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+
+# Node / web
+node_modules/
+web/dist/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/

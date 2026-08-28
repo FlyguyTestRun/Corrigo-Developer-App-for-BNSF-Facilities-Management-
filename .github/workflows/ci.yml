@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Refuse to build if operational data was committed
+        # The whole design rests on real Corrigo data never entering version
+        # control. A passing test suite over committed site data would be a
+        # worse outcome than a failing build, so this gate runs first.
+        run: |
+          leaked=$(git ls-files -- 'data/**' '*.db' '*.sqlite' '*.sqlite3' '.env' || true)
+          if [ -n "$leaked" ]; then
+            echo "::error::Operational data or credentials are tracked in git:"
+            echo "$leaked"
+            exit 1
+          fi
+          echo "No tracked data files or credentials."
+
+      - uses: astral-sh/setup-uv@v5
+
+      # A virtualenv, not --system: the runner's Python is externally managed
+      # (PEP 668), so a system install is refused. This also matches how the
+      # project is set up locally, which keeps CI honest about what contributors
+      # actually run.
+      - name: Install
+        run: |
+          uv venv
+          uv pip install -e ".[api,dev]"
+
+      - name: Test
+        run: .venv/bin/pytest -q
+
+      - name: Smoke test the CLI end to end
+        run: |
+          .venv/bin/bnsf-fm seed --db /tmp/ci.db --work-orders 200 --assets 40
+          .venv/bin/bnsf-fm backlog --db /tmp/ci.db --json > /dev/null
+          .venv/bin/bnsf-fm kpis --db /tmp/ci.db --json > /dev/null
+          .venv/bin/bnsf-fm route --db /tmp/ci.db --json > /dev/null
+          .venv/bin/bnsf-fm inventory --db /tmp/ci.db --json > /dev/null
