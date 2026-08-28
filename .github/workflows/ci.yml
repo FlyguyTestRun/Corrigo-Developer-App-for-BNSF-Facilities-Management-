@@ -26,16 +26,22 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
 
+      # A virtualenv, not --system: the runner's Python is externally managed
+      # (PEP 668), so a system install is refused. This also matches how the
+      # project is set up locally, which keeps CI honest about what contributors
+      # actually run.
       - name: Install
-        run: uv pip install --system -e ".[api,dev]"
+        run: |
+          uv venv
+          uv pip install -e ".[api,dev]"
 
       - name: Test
-        run: pytest -q
+        run: .venv/bin/pytest -q
 
       - name: Smoke test the CLI end to end
         run: |
-          bnsf-fm seed --db /tmp/ci.db --work-orders 200 --assets 40
-          bnsf-fm backlog --db /tmp/ci.db --json > /dev/null
-          bnsf-fm kpis --db /tmp/ci.db --json > /dev/null
-          bnsf-fm route --db /tmp/ci.db --json > /dev/null
-          bnsf-fm inventory --db /tmp/ci.db --json > /dev/null
+          .venv/bin/bnsf-fm seed --db /tmp/ci.db --work-orders 200 --assets 40
+          .venv/bin/bnsf-fm backlog --db /tmp/ci.db --json > /dev/null
+          .venv/bin/bnsf-fm kpis --db /tmp/ci.db --json > /dev/null
+          .venv/bin/bnsf-fm route --db /tmp/ci.db --json > /dev/null
+          .venv/bin/bnsf-fm inventory --db /tmp/ci.db --json > /dev/null
