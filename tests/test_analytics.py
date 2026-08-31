@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from bnsf_fm.analytics import aging, inventory, kpi, registry, routing
 from bnsf_fm.models import (
     Asset,
@@ -195,19 +197,24 @@ class TestKpi:
         )
         assert kpi.first_time_fix_rate(small_store.work_orders()) == 1.0
 
-    def test_names_pseudonymized_by_default(self, store):
+    def test_only_self_is_named(self, store):
+        """Everyone but the current user shows as "Tech N" — there is no flag
+        that reveals more, because no other name is stored."""
         report = kpi.build_report(store, now=NOW)
         assert report.technicians
-        assert all(t.label.startswith("TECH-") for t in report.technicians)
-        assert all("Technician " not in t.label for t in report.technicians)
+        peers = [t for t in report.technicians if not t.is_self]
+        assert peers
+        assert all(t.label.startswith("Tech ") for t in peers)
+        assert sum(1 for t in report.technicians if t.is_self) == 1
 
-    def test_reveal_shows_real_names(self, store):
-        report = kpi.build_report(store, now=NOW, reveal=True)
-        assert any(t.label.startswith("Technician ") for t in report.technicians)
+    def test_build_report_takes_no_reveal_argument(self, store):
+        with pytest.raises(TypeError):
+            kpi.build_report(store, now=NOW, reveal=True)
 
-    def test_pseudonym_is_stable(self):
-        assert Technician(id="T1").pseudonym == Technician(id="T1").pseudonym
-        assert Technician(id="T1").pseudonym != Technician(id="T2").pseudonym
+    def test_display_name_falls_back_when_unlabelled(self):
+        """An unlabelled technician still renders as something, never a name."""
+        assert Technician(id="abc123").display_name().startswith("Tech ")
+        assert Technician(id="x", name="Real Person").display_name().startswith("Tech ")
 
     def test_backlog_growth_is_opened_minus_closed(self, store):
         report = kpi.build_report(store, window_days=90, now=NOW)

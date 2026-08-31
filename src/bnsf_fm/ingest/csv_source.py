@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from bnsf_fm.ingest.anonymize import Roster
 from bnsf_fm.ingest.base import Batch
 from bnsf_fm.ingest.vocab import (
     PRIORITY_ALIASES,
@@ -201,14 +202,30 @@ class CsvSource:
         *,
         files: dict[str, Path] | None = None,
         mappings: dict[str, HeaderMap] | None = None,
+        roster: Roster | None = None,
     ) -> None:
         self.directory = Path(directory)
         self.files = files or {}
         self.mappings = {**DEFAULT_MAPPINGS, **(mappings or {})}
+        # Anonymizes co-worker identities as rows are read. A default Roster
+        # with no `me` set still strips every name — opting out is not a flag,
+        # it requires constructing a different pipeline.
+        self.roster = roster or Roster()
         self.warnings: list[str] = []
+        # Headers seen but not mapped to anything, per file. Reported by
+        # `bnsf-fm quality`: on a first real export these are the columns worth
+        # adding to the mapping, and they are invisible otherwise.
+        self.unmapped_headers: dict[str, list[str]] = {}
+        self.rows_read: dict[str, int] = {}
 
     @classmethod
-    def with_mapping_file(cls, directory: Path | str, mapping_path: Path | str) -> CsvSource:
+    def with_mapping_file(
+        cls,
+        directory: Path | str,
+        mapping_path: Path | str,
+        *,
+        roster: Roster | None = None,
+    ) -> CsvSource:
         """Build a source using site-specific header spellings from JSON.
 
         The JSON is `{entity: {field: [candidate headers...]}}` and is merged
@@ -224,7 +241,7 @@ class CsvSource:
             merged[entity] = HeaderMap(
                 fields=combined, required=base.required if base else []
             )
-        return cls(directory, mappings=merged)
+        return cls(directory, mappings=merged, roster=roster)
 
     def _discover(self, entity: str) -> list[Path]:
         if entity in self.files:
@@ -256,6 +273,11 @@ class CsvSource:
             except MappingError as exc:
                 self.warnings.append(f"{path.name}: {exc}")
                 continue
+            self.rows_read[path.name] = self.rows_read.get(path.name, 0) + len(rows)
+            claimed = set(resolved.values())
+            leftover = [h for h in headers if h not in claimed]
+            if leftover:
+                self.unmapped_headers[path.name] = leftover
             for row in rows:
                 yield row, resolved
 
@@ -270,6 +292,11 @@ class CsvSource:
     def fetch(self) -> Batch:
         batch = Batch()
         get = self._get
+        # Most Corrigo exports have no separate employee roster — the only
+        # place a technician appears is the assignee column on a work order.
+        # Collect them from there so the department is discoverable from one
+        # file, which is all a technician-level export is likely to give.
+        seen_assignees: dict[str, Any] = {}
 
         for row, res in self._rows("locations"):
             batch.locations.append(
@@ -283,11 +310,19 @@ class CsvSource:
             )
 
         for row, res in self._rows("technicians"):
+            # Identify on the id when the export has one, otherwise the name.
+            # Whichever it is, the raw value stops here: `identify` returns a
+            # surrogate and keeps a real name only for you.
+            raw = get(row, res, "id") or get(row, res, "name")
+            identity = self.roster.identify(raw)
+            if identity is None:
+                continue
             active_raw = get(row, res, "active")
             batch.technicians.append(
                 Technician(
-                    id=get(row, res, "id") or "",
-                    name=get(row, res, "name"),
+                    id=identity.id,
+                    name=identity.name,
+                    is_self=identity.is_self,
                     trade=get(row, res, "trade"),
                     active=norm(active_raw or "true") not in {"false", "0", "no", "inactive"},
                 )
@@ -346,6 +381,9 @@ class CsvSource:
                     f"work order {wo_id or '<no id>'}: unparseable or missing open date — skipped"
                 )
                 continue
+            assignee = self.roster.identify(get(row, res, "assigned_to"))
+            if assignee is not None:
+                seen_assignees[assignee.id] = assignee
             batch.work_orders.append(
                 WorkOrder(
                     id=wo_id,
@@ -357,7 +395,7 @@ class CsvSource:
                     priority=alias(get(row, res, "priority"), PRIORITY_ALIASES, Priority.MEDIUM),
                     asset_id=get(row, res, "asset_id"),
                     location_id=get(row, res, "location_id"),
-                    assigned_to=get(row, res, "assigned_to"),
+                    assigned_to=assignee.id if assignee else None,
                     opened_at=opened,
                     closed_at=parse_datetime(get(row, res, "closed_at")),
                     resolution=get(row, res, "resolution"),
@@ -366,9 +404,11 @@ class CsvSource:
 
         for i, (row, res) in enumerate(self._rows("labor_entries")):
             wo_id = get(row, res, "work_order_id")
-            tech_id = get(row, res, "technician_id")
-            if not (wo_id and tech_id):
+            worker = self.roster.identify(get(row, res, "technician_id"))
+            if not (wo_id and worker):
                 continue
+            tech_id = worker.id
+            seen_assignees.setdefault(worker.id, worker)
             logged = parse_datetime(get(row, res, "logged_at"))
             batch.labor_entries.append(
                 LaborEntry(
@@ -379,6 +419,25 @@ class CsvSource:
                     logged_at=logged or datetime.now(UTC),
                     note=get(row, res, "note"),
                 )
+            )
+
+        # Add anyone discovered on work orders or labor rows who was not in a
+        # roster file. `setdefault`-style: never overwrite a richer record.
+        known = {t.id for t in batch.technicians}
+        for identity in seen_assignees.values():
+            if identity.id not in known:
+                batch.technicians.append(
+                    Technician(
+                        id=identity.id, name=identity.name, is_self=identity.is_self
+                    )
+                )
+
+        if self.roster.me and not self.roster.matched_self:
+            # Almost always a spelling mismatch against the export. Producing a
+            # scorecard with no "you" in it would be a confusing way to find out.
+            batch.warnings.append(
+                f"--me {self.roster.me!r} matched no row in the export. Check the exact "
+                "spelling in the technician column; the scorecard needs it to find you."
             )
 
         batch.warnings.extend(self.warnings)

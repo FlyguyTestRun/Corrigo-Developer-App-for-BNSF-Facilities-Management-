@@ -10,8 +10,13 @@
     bnsf-fm asset AHU-0042
     bnsf-fm brief 100412
     bnsf-fm draft 100412 "swapped contactor, 1.5hr, running"
+    bnsf-fm scorecard --window 365 --html scorecard.html
+    bnsf-fm quality
 
 `--json` on any report command emits machine-readable output.
+
+Co-workers appear as "Tech N" everywhere. That is not a display setting — their
+names are discarded when data is loaded and are never written to the database.
 """
 
 from __future__ import annotations
@@ -24,8 +29,9 @@ from pathlib import Path
 from typing import Any
 
 from bnsf_fm.ai import notes, suggest
-from bnsf_fm.analytics import aging, inventory, kpi, registry, routing
-from bnsf_fm.ingest import CAMPUS_EDGES, CsvSource, FixtureSource, load
+from bnsf_fm.analytics import aging, inventory, kpi, quality, registry, routing, scorecard
+from bnsf_fm.ingest import CAMPUS_EDGES, CsvSource, FixtureSource, Roster, load
+from bnsf_fm.report import html as html_report
 from bnsf_fm.store import DEFAULT_DB_PATH, Store
 
 
@@ -53,10 +59,13 @@ def cmd_seed(args: argparse.Namespace) -> int:
 
 
 def cmd_load_csv(args: argparse.Namespace) -> int:
+    # The roster anonymizes as rows are read. Passing no --me still strips every
+    # name; --me only decides whose name is kept.
+    roster = Roster(me=args.me)
     source = (
-        CsvSource.with_mapping_file(args.directory, args.mapping)
+        CsvSource.with_mapping_file(args.directory, args.mapping, roster=roster)
         if args.mapping
-        else CsvSource(args.directory)
+        else CsvSource(args.directory, roster=roster)
     )
     batch = source.fetch()
     with Store(args.db) as store:
@@ -65,12 +74,40 @@ def cmd_load_csv(args: argparse.Namespace) -> int:
             "technicians": store.upsert_technicians(batch.technicians),
             "assets": store.upsert_assets(batch.assets),
             "parts": store.upsert_parts(batch.parts),
-            "work_orders": store.upsert_work_orders(batch.work_orders),
-            "labor_entries": store.upsert_labor(batch.labor_entries),
         }
+        stubbed = store.ensure_referenced(batch.work_orders)
+        written["work_orders"] = store.upsert_work_orders(batch.work_orders)
+        written["labor_entries"] = store.upsert_labor(batch.labor_entries)
     print(f"Loaded exports from {args.directory}:")
     for entity, count in written.items():
         print(f"  {entity:<16} {count:>6}")
+
+    if any(stubbed.values()):
+        print(
+            f"\n{stubbed['assets']} assets and {stubbed['locations']} locations were "
+            "referenced by work orders but not described in any export. They are "
+            "recorded as placeholders; export the asset and location lists to fill "
+            "them in."
+        )
+
+    # The first run against a real export is always a mapping problem, so say
+    # out loud which columns were seen and ignored rather than dropping them
+    # silently.
+    if source.unmapped_headers:
+        print("\nColumns present but not mapped (add spellings to a --mapping file):")
+        for filename, headers in source.unmapped_headers.items():
+            print(f"  {filename}: {', '.join(headers)}")
+
+    if args.me:
+        print(
+            f"\nIdentified you as {args.me!r}."
+            if roster.matched_self
+            else f"\n! {args.me!r} matched no row — check the spelling in the export."
+        )
+    print(
+        f"{roster.distinct_count()} distinct technicians seen; every name but yours "
+        "was discarded at load."
+    )
     if batch.warnings:
         print(f"\n{len(batch.warnings)} warning(s):")
         for warning in batch.warnings[:20]:
@@ -103,7 +140,7 @@ def cmd_backlog(args: argparse.Namespace) -> int:
     with Store(args.db) as store:
         report = aging.build_report(store)
     if args.json:
-        print(json.dumps(report.to_dict(reveal_names=args.reveal_names), indent=2))
+        print(json.dumps(report.to_dict(), indent=2))
         return 0
 
     print(f"\nOPEN WORK ORDERS: {report.total_open}")
@@ -131,7 +168,7 @@ def cmd_backlog(args: argparse.Namespace) -> int:
 def cmd_kpis(args: argparse.Namespace) -> int:
     with Store(args.db) as store:
         report = kpi.build_report(
-            store, window_days=args.window, reveal=args.reveal_names
+            store, window_days=args.window
         )
     if args.json:
         print(json.dumps(report.to_dict(), indent=2))
@@ -152,8 +189,10 @@ def cmd_kpis(args: argparse.Namespace) -> int:
             f"{tech.open_now:>6}{tech.median_cycle_days:>7.1f}{tech.hours_logged:>8.1f}"
             f"{tech.sla_met_rate:>7.0%}{tech.stalled_open:>7}"
         )
-    if not args.reveal_names:
-        print("\n  Names are pseudonymized. Pass --reveal-names to show them.")
+    print(
+        "\n  Co-workers appear as Tech N. Their real names were discarded at "
+        "load and are not in the database."
+    )
     return 0
 
 
@@ -273,6 +312,81 @@ def cmd_draft(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_scorecard(args: argparse.Namespace) -> int:
+    with Store(args.db) as store:
+        try:
+            card = scorecard.build(store, window_days=args.window)
+        except scorecard.NoSelfIdentified as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        report = quality.build(store) if args.html else None
+
+    if args.html:
+        path = Path(args.html)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(html_report.render(card, quality=report), encoding="utf-8")
+        print(f"Wrote {path}  ({path.stat().st_size // 1024} KB, self-contained)")
+        if not args.json:
+            return 0
+
+    if args.json:
+        print(json.dumps(card.to_dict(), indent=2))
+        return 0
+
+    print(f"\nSCORECARD — {card.me}, trailing {card.window_days} days\n")
+    print(f"  You completed {card.my_completed} of {card.department_completed} "
+          f"department work orders — {card.my_share:.0%}")
+    print(f"  An even split across {card.department_size} technicians would be "
+          f"{card.even_split_share:.0%}, so you are at {card.share_vs_even:.1f}x par")
+    print(f"\n  {'METRIC':<30}{'YOU':>9}{'MEDIAN':>9}{'RANK':>10}  READ")
+    for c in card.comparisons:
+        unit = c.unit
+        fmt = (lambda v: f"{v:.0%}") if unit == "%" else (
+            (lambda v: f"{v:.1f}") if unit == "days" else (lambda v: f"{v:g}")
+        )
+        mark = "+" if c.favorable else "-"
+        print(
+            f"  {c.metric:<30}{fmt(c.mine):>9}{fmt(c.department_median):>9}"
+            f"{f'{c.rank} of {c.of}':>10}  {mark} {c.percentile:.0%} percentile"
+        )
+    print("\n  How to read this:")
+    for note in card.caveats:
+        print(f"    - {note}")
+    return 0
+
+
+def cmd_quality(args: argparse.Namespace) -> int:
+    with Store(args.db) as store:
+        report = quality.build(store)
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2))
+        return 0
+
+    start, end = report.date_range
+    print(f"\nDATA QUALITY — {report.work_orders} work orders, "
+          f"{report.technicians} technicians")
+    if start and end:
+        print(f"  covering {start.date()} to {end.date()} "
+              f"({report.coverage_days} days)")
+    print(f"\n  {'FIELD':<28}{'MISSING':>12}{'SHARE':>8}  IMPACT")
+    for finding in sorted(report.findings, key=lambda f: f.share, reverse=True):
+        print(
+            f"  {finding.field:<28}{f'{finding.missing}/{finding.total}':>12}"
+            f"{finding.share:>8.0%}  {finding.severity}"
+        )
+    blocking = report.blocking
+    if blocking:
+        print("\n  What the gaps cost:")
+        for finding in blocking:
+            print(f"    - {finding.field}: {finding.costs}")
+    if report.names_leaked:
+        print(f"\n  ! {len(report.names_leaked)} co-worker name(s) found in the "
+              "database — the anonymizer did not do its job. This is a bug.")
+    else:
+        print("\n  Anonymization verified: no co-worker names stored.")
+    return 0
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     try:
         import uvicorn
@@ -305,6 +419,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("load-csv", help="load Corrigo CSV/BI exports (Tier 1)")
     p.add_argument("directory", nargs="?", default="data/raw", type=Path)
     p.add_argument("--mapping", type=Path, help="JSON file of site-specific header spellings")
+    p.add_argument(
+        "--me",
+        help="your name or employee id exactly as it appears in the export's "
+        "technician column; everyone else is anonymized either way",
+    )
     p.add_argument("--db", default=str(DEFAULT_DB_PATH))
     p.set_defaults(func=cmd_load_csv)
 
@@ -316,13 +435,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("backlog", help="aging board and stalled work orders")
     _add_common(p)
     p.add_argument("--limit", type=int, default=20)
-    p.add_argument("--reveal-names", dest="reveal_names", action="store_true")
     p.set_defaults(func=cmd_backlog)
 
     p = sub.add_parser("kpis", help="team and technician KPIs")
     _add_common(p)
     p.add_argument("--window", type=int, default=90)
-    p.add_argument("--reveal-names", dest="reveal_names", action="store_true")
     p.set_defaults(func=cmd_kpis)
 
     p = sub.add_parser("route", help="sequence today's open work orders")
@@ -353,6 +470,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("note")
     p.add_argument("--model", action="store_true", help="use Claude for the prose")
     p.set_defaults(func=cmd_draft)
+
+    p = sub.add_parser("scorecard", help="you against the department")
+    _add_common(p)
+    p.add_argument("--window", type=int, default=365)
+    p.add_argument("--html", help="also write a shareable self-contained HTML page here")
+    p.set_defaults(func=cmd_scorecard)
+
+    p = sub.add_parser("quality", help="what the export was missing")
+    _add_common(p)
+    p.set_defaults(func=cmd_quality)
 
     p = sub.add_parser("serve", help="run the dashboard API")
     p.add_argument("--host", default="127.0.0.1")

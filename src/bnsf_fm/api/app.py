@@ -4,9 +4,9 @@ Read-only over the local store. `POST /draft` is the one non-GET route and it
 still writes nothing — it returns a draft for a human to review and submit into
 Corrigo themselves.
 
-Name revelation is a per-request query parameter rather than a server setting,
-so the default response — the one that gets screenshotted, pasted into a deck,
-or cached by a browser — is always pseudonymized.
+No endpoint can disclose a co-worker's name, because identities are anonymized
+at ingest and the names are not in the database to serve. Labels are "Tech N";
+only the person who loaded the data appears by name.
 """
 
 from __future__ import annotations
@@ -60,9 +60,9 @@ def health() -> dict[str, Any]:
 
 
 @app.get("/backlog")
-def get_backlog(reveal_names: bool = False) -> dict[str, Any]:
+def get_backlog() -> dict[str, Any]:
     with _store() as store:
-        return aging.build_report(store).to_dict(reveal_names=reveal_names)
+        return aging.build_report(store).to_dict()
 
 
 @app.get("/work-orders")
@@ -104,12 +104,9 @@ def get_work_orders(
 @app.get("/kpis")
 def get_kpis(
     window_days: Annotated[int, Query(ge=7, le=730)] = 90,
-    reveal_names: bool = False,
 ) -> dict[str, Any]:
     with _store() as store:
-        return kpi.build_report(
-            store, window_days=window_days, reveal=reveal_names
-        ).to_dict()
+        return kpi.build_report(store, window_days=window_days).to_dict()
 
 
 @app.get("/assets")

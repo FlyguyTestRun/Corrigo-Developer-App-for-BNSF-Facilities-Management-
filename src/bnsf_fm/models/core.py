@@ -8,7 +8,6 @@ a refactor across analytics.
 
 from __future__ import annotations
 
-import hashlib
 from datetime import UTC, datetime
 from enum import StrEnum
 
@@ -71,10 +70,20 @@ class AssetCriticality(StrEnum):
 class Technician(BaseModel):
     """A person who logs labor against work orders.
 
-    `display_name` is what any shared view shows. It defaults to a stable
-    pseudonym derived from the technician id, so team-level dashboards can be
-    built and shared without exposing co-workers by name. Real names are opt-in
-    per-viewer, never a property of the stored record.
+    Identity is already anonymized by the time a record gets here: `id` is an
+    opaque surrogate and `name` is populated only for the person running the
+    tool (`is_self`). See `bnsf_fm.ingest.anonymize`.
+
+    `label` — "Tech 1", "Tech 2", … — is allocated once by the store and then
+    persisted, never recomputed. Deriving labels by sorting on each load would
+    mean one new hire renumbers everyone, so "Tech 3" would silently refer to a
+    different person than it did last month, invalidating any comparison over
+    time.
+
+    An earlier version derived the label as `sha256(id) % 100`. Measured
+    against realistic `EMP0001`-style ids that collides for 2 of 12
+    technicians, silently merging two real people into one row — which is
+    exactly the number this project exists to get right.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -83,17 +92,19 @@ class Technician(BaseModel):
     name: str | None = None
     trade: str | None = None
     active: bool = True
+    label: str | None = None
+    is_self: bool = False
 
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def pseudonym(self) -> str:
-        digest = hashlib.sha256(self.id.encode()).hexdigest()
-        return f"TECH-{int(digest[:8], 16) % 100:02d}"
+    def display_name(self) -> str:
+        """What every report shows: your name for you, "Tech N" for everyone else.
 
-    def display_name(self, *, reveal: bool = False) -> str:
-        if reveal and self.name:
+        Takes no `reveal` argument on purpose. Under ingest-time anonymization
+        there is nothing to reveal — a co-worker's name is not in the database
+        to be un-hidden.
+        """
+        if self.is_self and self.name:
             return self.name
-        return self.pseudonym
+        return self.label or f"Tech ?{self.id[:4]}"
 
 
 class Location(BaseModel):
@@ -143,7 +154,9 @@ class Asset(BaseModel):
     tag: str
     name: str
     category: str
-    location_id: str
+    # Empty when the asset is known only as a reference from a work order —
+    # a work-order-only export names assets it does not describe.
+    location_id: str = ""
     manufacturer: str | None = None
     model: str | None = None
     serial: str | None = None

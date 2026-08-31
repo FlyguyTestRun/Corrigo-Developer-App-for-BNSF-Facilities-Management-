@@ -1,12 +1,12 @@
 """Team and technician performance metrics.
 
-Pseudonymized by default. `reveal=True` is a per-call decision made by whoever
-runs the report, never a stored property — team dashboards and anything that
-leaves a laptop show TECH-nn, and the mapping back to real names stays in the
-private pilot's local database.
+Labels come straight off the stored record: your name for you, "Tech N" for
+everyone else. There is no reveal switch, because under ingest-time
+anonymization there is nothing to reveal — a co-worker's name was never
+written to the database. See `bnsf_fm.ingest.anonymize`.
 
 Metrics are deliberately volume-normalized. Raw counts punish whoever gets
-handed the hard work; median cycle time and completion rate do not.
+handed the hard work; median cycle time and SLA-met rate do not.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ def _median(values: list[float]) -> float:
 class TechnicianKpi:
     technician_id: str
     label: str
+    is_self: bool
     trade: str | None
     completed: int
     open_now: int
@@ -48,6 +49,7 @@ class TechnicianKpi:
     def to_dict(self) -> dict[str, object]:
         return {
             "technician": self.label,
+            "is_self": self.is_self,
             "trade": self.trade,
             "completed": self.completed,
             "open_now": self.open_now,
@@ -129,7 +131,6 @@ def build_report(
     *,
     window_days: int = 90,
     now: datetime | None = None,
-    reveal: bool = False,
 ) -> TeamKpi:
     """Team and per-technician KPIs over a trailing window."""
     now = now or datetime.now(UTC)
@@ -189,7 +190,8 @@ def build_report(
         tech_kpis.append(
             TechnicianKpi(
                 technician_id=tech_id,
-                label=tech.display_name(reveal=reveal),
+                label=tech.display_name(),
+                is_self=tech.is_self,
                 trade=tech.trade,
                 completed=len(done),
                 open_now=open_by_tech.get(tech_id, 0),

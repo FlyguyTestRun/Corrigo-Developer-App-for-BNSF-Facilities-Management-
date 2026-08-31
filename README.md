@@ -76,6 +76,10 @@ ceiling — so it works the day credentials arrive.
 | `analytics/registry.py` | Asset dossiers, recurring faults, repair-vs-replace |
 | `ai/notes.py` | Field notes → structured work order draft |
 | `ai/suggest.py` | History-grounded pre-job briefings |
+| `ingest/anonymize.py` | Surrogate identities; names discarded as rows are read |
+| `analytics/scorecard.py` | You vs the department: share, cycle time, SLA, rank |
+| `analytics/quality.py` | What the export was missing, and what it costs |
+| `report/html.py` | Self-contained scorecard page, generated locally |
 | `mcp/server.py` | Eleven tools exposing all of the above to Claude |
 | `api/` | FastAPI service and the dashboard |
 
@@ -83,9 +87,12 @@ ceiling — so it works the day credentials arrive.
 
 ```bash
 bnsf-fm seed                              # synthetic campus
-bnsf-fm load-csv data/raw                 # Tier 1: Corrigo exports
+bnsf-fm load-csv data/raw --me "Your Name"   # Tier 1: Corrigo exports
 bnsf-fm load-csv data/raw --mapping site-headers.json
 bnsf-fm load-api --since 2026-01-01       # Tier 2: REST API
+
+bnsf-fm scorecard --html scorecard.html   # you vs the department
+bnsf-fm quality                           # what the export was missing
 
 bnsf-fm backlog --limit 20                # aging + stalled list
 bnsf-fm kpis --window 90                  # team and technician KPIs
@@ -104,7 +111,25 @@ Every report command accepts `--json`.
 No credentials or approvals needed — export the reports you can already see in
 Corrigo, drop the CSVs in `data/raw/`, and run `bnsf-fm load-csv`. Files are
 matched by name (`workorders*.csv`, `assets*.csv`, `locations*.csv`,
-`labor*.csv`, `parts*.csv`).
+`labor*.csv`, `parts*.csv`). Step-by-step, including what a technician-level
+role can actually see: **[`docs/exporting-from-corrigo.md`](docs/exporting-from-corrigo.md)**.
+
+### Identity is stripped at the door
+
+```bash
+bnsf-fm load-csv data/raw --me "Your Name As It Appears In The Export"
+```
+
+`--me` decides whose name is *kept*. Everyone else is anonymized either way:
+each co-worker's name is hashed to an opaque surrogate and **discarded as the
+row is read**, so the database physically cannot leak it. Each becomes a stable
+`Tech 1`…`Tech N`.
+
+Labels are allocated once and persisted, never recomputed — if they were derived
+by sorting on each load, a single new hire would renumber everyone and "Tech 3"
+would silently mean a different person than it did last month. `bnsf-fm quality`
+verifies the guarantee rather than asserting it, by checking that no co-worker
+name exists in the store.
 
 Corrigo's export headers vary by report, tenant, and version, so column names
 are **configuration, not code**. The defaults in
@@ -154,9 +179,9 @@ These are enforced in code and covered by tests, not just stated:
 - **Read-only against Corrigo.** No write command is implemented. The
   note-drafting feature produces a draft a human reviews and submits; every
   draft carries `requires_human_submission: true`.
-- **Pseudonymized by default.** Technicians appear as `TECH-nn` in every report
-  and API response unless the caller explicitly passes a reveal flag. The
-  default output — the one that gets screenshotted — carries no real names.
+- **Anonymized at ingest, not at render.** Co-workers appear as `Tech N`
+  everywhere, and there is no flag that reveals more — their names were never
+  written to the database. Only the person who loaded the data is named.
 - **Local only.** One SQLite file. No cloud service, no telemetry.
 - **Degrades without a model.** Note extraction works with no API key and no
   network; Claude improves the prose when configured, and never supplies the
@@ -168,7 +193,7 @@ These are enforced in code and covered by tests, not just stated:
 ## Tests
 
 ```bash
-pytest              # 155 tests
+pytest              # 202 tests
 ```
 
 Coverage concentrates on what would be expensive to get wrong: aging and stall
@@ -179,6 +204,7 @@ tenant to test against.
 
 ## Documentation
 
+- [`docs/exporting-from-corrigo.md`](docs/exporting-from-corrigo.md) — how to pull the data, and what your role can see
 - [`docs/business-case.md`](docs/business-case.md) — the argument, for a manager
 - [`docs/corrigo-api-notes.md`](docs/corrigo-api-notes.md) — verified API facts and open questions
 - [`docs/credential-request.md`](docs/credential-request.md) — the one-pager for a Corrigo sysadmin
