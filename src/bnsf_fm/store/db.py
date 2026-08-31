@@ -99,11 +99,46 @@ class Store:
         )
 
     def upsert_technicians(self, items: Iterable[Technician]) -> int:
-        return self._upsert_many(
+        """Write technicians, allocating a persistent label to any new one.
+
+        Existing labels are never reassigned, so a new hire takes the next free
+        number rather than shifting everyone else along.
+        """
+        items = list(items)
+        written = self._upsert_many(
             "technicians",
-            ("id", "name", "trade", "active"),
-            [(x.id, x.name, x.trade, int(x.active)) for x in items],
+            ("id", "name", "trade", "active", "is_self"),
+            [(x.id, x.name, x.trade, int(x.active), int(x.is_self)) for x in items],
         )
+        self.assign_labels()
+        return written
+
+    def assign_labels(self) -> dict[str, str]:
+        """Give every unlabelled technician the next free "Tech N".
+
+        Allocation order is by id, which makes a cold load deterministic; once
+        allocated a label is immutable, which makes an incremental load stable.
+        Your own record is labelled too, so it still has one if a report ever
+        needs a non-personal handle for you.
+        """
+        rows = self._query("SELECT id, label FROM technicians ORDER BY id")
+        used = {r["label"] for r in rows if r["label"]}
+        next_number = 1
+        assigned: dict[str, str] = {}
+        for row in rows:
+            if row["label"]:
+                assigned[row["id"]] = row["label"]
+                continue
+            while f"Tech {next_number}" in used:
+                next_number += 1
+            label = f"Tech {next_number}"
+            used.add(label)
+            assigned[row["id"]] = label
+            self.conn.execute(
+                "UPDATE technicians SET label = ? WHERE id = ?", (label, row["id"])
+            )
+        self.conn.commit()
+        return assigned
 
     def upsert_manuals(self, items: Iterable[Manual]) -> int:
         return self._upsert_many(
@@ -183,6 +218,66 @@ class Store:
             [(x.id, x.work_order_id, x.part_id, x.quantity, _iso(x.used_at)) for x in items],
         )
 
+    def ensure_referenced(self, work_orders: Iterable[WorkOrder]) -> dict[str, int]:
+        """Create placeholder rows for assets and locations a work order names.
+
+        A technician-level export usually contains work orders and nothing else:
+        the rows carry an Asset Id and a Location Id, but no asset or location
+        file describes them. Without this the foreign keys reject the whole load
+        — which is the normal case, not an edge case.
+
+        Stubs carry the referenced id and nothing invented. When an asset or
+        location export arrives later it upserts onto the same id and fills in
+        the real detail, so partial loads accumulate rather than conflict.
+        `bnsf-fm quality` counts what is still a stub.
+        """
+        work_orders = list(work_orders)
+        known_assets = {r["id"] for r in self._query("SELECT id FROM assets")}
+        known_locations = {r["id"] for r in self._query("SELECT id FROM locations")}
+
+        missing_locations = {
+            wo.location_id
+            for wo in work_orders
+            if wo.location_id and wo.location_id not in known_locations
+        }
+        # An asset's location is unknown at this point; leave it null rather
+        # than guessing, and let a later asset export supply it.
+        missing_assets = {
+            wo.asset_id
+            for wo in work_orders
+            if wo.asset_id and wo.asset_id not in known_assets
+        }
+
+        if missing_locations:
+            self.conn.executemany(
+                "INSERT INTO locations (id, building) VALUES (?, 'Unknown') "
+                "ON CONFLICT (id) DO NOTHING",
+                [(loc_id,) for loc_id in sorted(missing_locations)],
+            )
+        if missing_assets:
+            self.conn.executemany(
+                "INSERT INTO assets (id, tag, name, category, location_id) "
+                "VALUES (?, ?, ?, 'Uncategorized', NULL) "
+                "ON CONFLICT (id) DO NOTHING",
+                [(a, a, a) for a in sorted(missing_assets)],
+            )
+        self.conn.commit()
+        return {
+            "locations": len(missing_locations),
+            "assets": len(missing_assets),
+        }
+
+    def stub_counts(self) -> dict[str, int]:
+        """Assets and locations known only as a reference, never described."""
+        assets = self.conn.execute(
+            "SELECT COUNT(*) FROM assets WHERE category = 'Uncategorized' "
+            "AND location_id IS NULL"
+        ).fetchone()[0]
+        locations = self.conn.execute(
+            "SELECT COUNT(*) FROM locations WHERE building = 'Unknown'"
+        ).fetchone()[0]
+        return {"assets": int(assets), "locations": int(locations)}
+
     def set_campus_edges(self, edges: Iterable[tuple[str, str, float]]) -> int:
         """Replace the walking graph. Stores both directions."""
         rows: list[tuple[str, str, float]] = []
@@ -213,26 +308,48 @@ class Store:
     def technicians(self) -> list[Technician]:
         return [
             Technician(
-                id=r["id"], name=r["name"], trade=r["trade"], active=bool(r["active"])
+                id=r["id"],
+                name=r["name"],
+                trade=r["trade"],
+                active=bool(r["active"]),
+                label=r["label"],
+                is_self=bool(r["is_self"]),
             )
-            for r in self._query("SELECT * FROM technicians")
+            for r in self._query("SELECT * FROM technicians ORDER BY id")
         ]
 
+    def self_technician(self) -> Technician | None:
+        """The person running the tool, if a load has identified them."""
+        return next((t for t in self.technicians() if t.is_self), None)
+
+    def stored_names(self, *, others_only: bool = True) -> list[str]:
+        """Real names present in the store.
+
+        Exists so the privacy guarantee is *checkable* rather than asserted:
+        after an anonymized load this returns an empty list, and both the test
+        suite and `bnsf-fm quality` say so out loud.
+        """
+        sql = "SELECT name FROM technicians WHERE name IS NOT NULL"
+        if others_only:
+            sql += " AND is_self = 0"
+        return [r["name"] for r in self._query(sql)]
+
+    @staticmethod
+    def _asset_row(row: sqlite3.Row) -> Asset:
+        d = dict(row)
+        d["installed_on"] = _dt(d["installed_on"])
+        # A stub asset — one named by a work order but described by no export —
+        # has a NULL location. The model uses "" for "not known yet"; the column
+        # must stay NULL so the foreign key has nothing to fail against.
+        d["location_id"] = d["location_id"] or ""
+        return Asset(**d)
+
     def assets(self) -> list[Asset]:
-        out = []
-        for r in self._query("SELECT * FROM assets"):
-            d = dict(r)
-            d["installed_on"] = _dt(d["installed_on"])
-            out.append(Asset(**d))
-        return out
+        return [self._asset_row(r) for r in self._query("SELECT * FROM assets")]
 
     def asset(self, asset_id: str) -> Asset | None:
         rows = self._query("SELECT * FROM assets WHERE id = ?", (asset_id,))
-        if not rows:
-            return None
-        d = dict(rows[0])
-        d["installed_on"] = _dt(d["installed_on"])
-        return Asset(**d)
+        return self._asset_row(rows[0]) if rows else None
 
     def work_orders(self, *, open_only: bool = False) -> list[WorkOrder]:
         sql = "SELECT * FROM work_orders"

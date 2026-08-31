@@ -13,9 +13,10 @@ Register with:
 
     claude mcp add bnsf-fm -- /path/to/.venv/bin/python -m bnsf_fm.mcp.server
 
-Tool results are shaped for reading, not for machine consumption: names are
-pseudonymized unless `reveal_names` is explicitly set, and numbers are rounded
-to the precision a person would actually quote.
+Tool results are shaped for reading, not machine consumption: numbers are
+rounded to the precision a person would actually quote, and co-workers appear
+as "Tech N" — not by policy but because their names were discarded at ingest
+and are not in the database to return.
 """
 
 from __future__ import annotations
@@ -39,11 +40,11 @@ def _store() -> Store:
 # Kept as plain functions so they are unit-testable without an MCP runtime.
 
 
-def backlog_summary(stalled_limit: int = 15, reveal_names: bool = False) -> dict[str, Any]:
+def backlog_summary(stalled_limit: int = 15) -> dict[str, Any]:
     """Aging distribution, SLA breaches, and the stalled work order list."""
     with _store() as store:
         report = aging.build_report(store)
-        data = report.to_dict(reveal_names=reveal_names)
+        data = report.to_dict()
         data["stalled"] = data["stalled"][:stalled_limit]  # type: ignore[index]
         return data
 
@@ -83,10 +84,10 @@ def open_work_orders(
         return out[:limit]
 
 
-def team_kpis(window_days: int = 90, reveal_names: bool = False) -> dict[str, Any]:
+def team_kpis(window_days: int = 90) -> dict[str, Any]:
     """Team and per-technician KPIs over a trailing window."""
     with _store() as store:
-        return kpi.build_report(store, window_days=window_days, reveal=reveal_names).to_dict()
+        return kpi.build_report(store, window_days=window_days).to_dict()
 
 
 def asset_history(asset_tag: str) -> dict[str, Any]:

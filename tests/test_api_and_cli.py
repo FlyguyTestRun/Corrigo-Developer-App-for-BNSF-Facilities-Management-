@@ -50,18 +50,24 @@ class TestApi:
         assert sum(body["buckets"].values()) == body["total_open"]
         assert body["stalled_count"] == len(body["stalled"])
 
-    def test_backlog_hides_names_by_default(self, client):
+    def test_backlog_shows_labels_never_names(self, client):
         body = client.get("/backlog").json()
-        assert all(item["assigned_to"] is None for item in body["stalled"])
+        assigned = [i["assigned_to"] for i in body["stalled"] if i["assigned_to"]]
+        assert assigned, "expected some stalled work orders to have an assignee"
+        assert all(a.startswith("Tech ") or a.startswith("You") for a in assigned)
 
-    def test_kpis_pseudonymize_by_default(self, client):
+    def test_kpis_label_peers_as_tech_n(self, client):
         body = client.get("/kpis").json()
         assert body["technicians"]
-        assert all(t["technician"].startswith("TECH-") for t in body["technicians"])
+        peers = [t for t in body["technicians"] if not t["is_self"]]
+        assert peers
+        assert all(t["technician"].startswith("Tech ") for t in peers)
 
-    def test_kpis_reveal_is_explicit_opt_in(self, client):
+    def test_no_endpoint_accepts_a_reveal_switch(self, client):
+        """reveal_names is gone; an unknown query param must not resurrect it."""
         body = client.get("/kpis", params={"reveal_names": "true"}).json()
-        assert any(t["technician"].startswith("Technician ") for t in body["technicians"])
+        peers = [t for t in body["technicians"] if not t["is_self"]]
+        assert all(t["technician"].startswith("Tech ") for t in peers)
 
     def test_work_order_filters_apply(self, client):
         buildings = client.get("/buildings").json()
@@ -150,9 +156,29 @@ class TestCli:
         payload = json.loads(capsys.readouterr().out)
         assert "buckets" in payload
 
-    def test_kpis_note_pseudonymization(self, db_path, capsys):
+    def test_kpis_note_anonymization(self, db_path, capsys):
         assert self._run(["kpis"], db_path) == 0
-        assert "pseudonymized" in capsys.readouterr().out
+        assert "discarded at load" in capsys.readouterr().out
+
+    def test_scorecard_renders(self, db_path, capsys):
+        assert self._run(["scorecard"], db_path) == 0
+        out = capsys.readouterr().out
+        assert "SCORECARD" in out
+        assert "par" in out
+
+    def test_scorecard_writes_self_contained_html(self, db_path, tmp_path, capsys):
+        target = tmp_path / "sc.html"
+        assert self._run(["scorecard", "--html", str(target)], db_path) == 0
+        page = target.read_text(encoding="utf-8")
+        assert page.startswith("<!doctype html>")
+        # Self-contained: no external stylesheet, script or image.
+        assert "<link rel=\"stylesheet\"" not in page
+        assert "src=\"http" not in page
+        assert "Tech 1" in page
+
+    def test_quality_verifies_anonymization(self, db_path, capsys):
+        assert self._run(["quality"], db_path) == 0
+        assert "no co-worker names stored" in capsys.readouterr().out
 
     def test_route_renders_stops(self, db_path, capsys):
         assert self._run(["route", "--stops", "3"], db_path) == 0
@@ -207,14 +233,16 @@ class TestMcpTools:
         assert results["backlog_summary"]["total_open"] > 0
         assert len(results["open_work_orders"]) == 5
 
-    def test_tools_pseudonymize_by_default(self, db_path):
+    def test_tools_label_peers_as_tech_n(self, db_path):
         import importlib
 
         from bnsf_fm.mcp import server as server_module
 
         importlib.reload(server_module)
         kpis = server_module.team_kpis()
-        assert all(t["technician"].startswith("TECH-") for t in kpis["technicians"])
+        peers = [t for t in kpis["technicians"] if not t["is_self"]]
+        assert peers
+        assert all(t["technician"].startswith("Tech ") for t in peers)
 
     def test_unknown_work_order_returns_an_error_not_an_exception(self, db_path):
         import importlib

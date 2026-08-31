@@ -1,5 +1,6 @@
 """Ingestion sources. The only layer that knows where data came from."""
 
+from bnsf_fm.ingest.anonymize import Identity, Roster, normalize_identity, surrogate_id
 from bnsf_fm.ingest.base import Batch, IngestionSource, load
 from bnsf_fm.ingest.corrigo_api import (
     CorrigoApiSource,
@@ -18,9 +19,13 @@ __all__ = [
     "CorrigoClient",
     "CorrigoCredentials",
     "CsvSource",
+    "Identity",
     "FixtureSource",
     "HeaderMap",
     "IngestionSource",
     "MappingError",
+    "Roster",
     "load",
+    "normalize_identity",
+    "surrogate_id",
 ]

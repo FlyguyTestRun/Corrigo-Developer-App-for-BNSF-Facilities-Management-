@@ -55,6 +55,9 @@ class StalledWorkOrder:
     hours_logged: float
     hours_per_day: float
     assigned_to: str | None
+    # The display label ("Tech 4", or your name). `assigned_to` is the opaque
+    # surrogate id and never appears in output.
+    assigned_label: str | None = None
 
     @property
     def severity(self) -> str:
@@ -65,7 +68,7 @@ class StalledWorkOrder:
             return "moderate"
         return "watch"
 
-    def to_dict(self, *, reveal_names: bool = False) -> dict[str, object]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "number": self.work_order.number,
             "title": self.work_order.title,
@@ -75,7 +78,7 @@ class StalledWorkOrder:
             "hours_logged": round(self.hours_logged, 2),
             "hours_per_day": round(self.hours_per_day, 3),
             "severity": self.severity,
-            "assigned_to": self.assigned_to if reveal_names else None,
+            "assigned_to": self.assigned_label,
         }
 
 
@@ -100,7 +103,7 @@ class AgingReport:
         """
         return round(sum(s.days_open for s in self.stalled), 1)
 
-    def to_dict(self, *, reveal_names: bool = False) -> dict[str, object]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "generated_at": self.generated_at.isoformat(),
             "total_open": self.total_open,
@@ -112,7 +115,7 @@ class AgingReport:
             "oldest_days_open": round(self.oldest_days_open, 1),
             "stalled_count": len(self.stalled),
             "stalled_days_at_risk": self.stalled_hours_at_risk,
-            "stalled": [s.to_dict(reveal_names=reveal_names) for s in self.stalled],
+            "stalled": [s.to_dict() for s in self.stalled],
         }
 
 
@@ -133,6 +136,7 @@ def find_stalled(
     now: datetime | None = None,
     threshold: float = STALL_HOURS_PER_DAY,
     min_age_days: float = STALL_MIN_AGE_DAYS,
+    labels: dict[str, str] | None = None,
 ) -> list[StalledWorkOrder]:
     """Open work orders whose logged labor cannot account for their age.
 
@@ -157,6 +161,7 @@ def find_stalled(
                     hours_logged=hours,
                     hours_per_day=rate,
                     assigned_to=wo.assigned_to,
+                    assigned_label=(labels or {}).get(wo.assigned_to or ""),
                 )
             )
     out.sort(key=lambda s: s.days_open, reverse=True)
@@ -167,6 +172,7 @@ def build_report(store: Store, *, now: datetime | None = None) -> AgingReport:
     now = now or datetime.now(UTC)
     open_wos = [wo for wo in store.work_orders(open_only=True)]
     labor = store.labor_hours_by_work_order()
+    labels = {t.id: t.display_name() for t in store.technicians()}
 
     ages = [wo.age_days(now=now) for wo in open_wos]
     buckets = Counter(bucket_for(d) for d in ages)
@@ -179,7 +185,7 @@ def build_report(store: Store, *, now: datetime | None = None) -> AgingReport:
         by_priority=dict(Counter(str(wo.priority) for wo in open_wos)),
         by_status=dict(Counter(str(wo.status) for wo in open_wos)),
         sla_breached=sum(1 for wo in open_wos if wo.breached_sla(now=now)),
-        stalled=find_stalled(open_wos, labor, now=now),
+        stalled=find_stalled(open_wos, labor, now=now, labels=labels),
         median_days_open=_median(ages),
         oldest_days_open=max(ages, default=0.0),
     )

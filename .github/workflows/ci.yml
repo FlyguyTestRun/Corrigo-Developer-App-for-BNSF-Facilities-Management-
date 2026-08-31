@@ -45,3 +45,7 @@ jobs:
           .venv/bin/bnsf-fm kpis --db /tmp/ci.db --json > /dev/null
           .venv/bin/bnsf-fm route --db /tmp/ci.db --json > /dev/null
           .venv/bin/bnsf-fm inventory --db /tmp/ci.db --json > /dev/null
+          .venv/bin/bnsf-fm scorecard --db /tmp/ci.db --json > /dev/null
+          .venv/bin/bnsf-fm quality --db /tmp/ci.db --json > /dev/null
+          .venv/bin/bnsf-fm scorecard --db /tmp/ci.db --html /tmp/ci-scorecard.html
+          test -s /tmp/ci-scorecard.html

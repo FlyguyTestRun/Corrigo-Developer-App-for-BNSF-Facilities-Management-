@@ -181,8 +181,12 @@ class FixtureSource:
         work_order_count: int = 2000,
         history_days: int = 540,
         now: datetime | None = None,
+        self_index: int = 4,
     ) -> None:
         self.rng = random.Random(seed)
+        # Which of the twelve synthetic technicians stands in for the person
+        # running the tool, so the scorecard demo has someone to be.
+        self.self_index = self_index
         self.asset_count = asset_count
         self.work_order_count = work_order_count
         self.history_days = history_days
@@ -223,11 +227,20 @@ class FixtureSource:
         return out
 
     def _technicians(self) -> list[Technician]:
-        # Names are obviously synthetic. Real technician identities never enter
-        # this repo; the private pilot supplies them locally.
+        """A synthetic crew, anonymized the same way real data is.
+
+        Names are left unset for everyone but one designated "self", exactly as
+        an anonymized load produces — so the synthetic campus exercises the
+        real code path rather than a friendlier one, and `bnsf-fm scorecard`
+        has a "you" to report on out of the box.
+        """
         return [
-            Technician(id=f"TECH-{i:03d}", name=f"Technician {i:03d}",
-                       trade=TRADES[i % len(TRADES)])
+            Technician(
+                id=f"TECH-{i:03d}",
+                name="You (demo)" if i == self.self_index else None,
+                is_self=(i == self.self_index),
+                trade=TRADES[i % len(TRADES)],
+            )
             for i in range(1, 13)
         ]
 

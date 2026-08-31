@@ -77,11 +77,16 @@ def load(source: IngestionSource, store: Store) -> dict[str, int]:
     that reference them, so foreign keys resolve on a cold database.
     """
     batch = source.fetch()
+    store.upsert_locations(batch.locations)
+    store.upsert_assets(batch.assets)
+    # Work orders routinely name assets and locations that no file in this
+    # batch describes; stub them so the foreign keys hold.
+    store.ensure_referenced(batch.work_orders)
     written = {
-        "locations": store.upsert_locations(batch.locations),
+        "locations": len(batch.locations),
         "technicians": store.upsert_technicians(batch.technicians),
         "manuals": store.upsert_manuals(batch.manuals),
-        "assets": store.upsert_assets(batch.assets),
+        "assets": len(batch.assets),
         "parts": store.upsert_parts(batch.parts),
         "work_orders": store.upsert_work_orders(batch.work_orders),
         "labor_entries": store.upsert_labor(batch.labor_entries),

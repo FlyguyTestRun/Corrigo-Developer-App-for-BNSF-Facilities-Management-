@@ -24,11 +24,21 @@ CREATE TABLE IF NOT EXISTS locations (
     description TEXT
 );
 
+-- Identities are already anonymized on arrival: `id` is an opaque surrogate
+-- and `name` is NULL for everyone except the person running the tool. The CI
+-- gate and `bnsf-fm quality` both assert that.
+--
+-- `label` ("Tech 1", "Tech 2", …) is allocated once and never recomputed. If
+-- it were derived by sorting on each load, one new hire would renumber
+-- everyone and "Tech 3" would silently mean a different person than it did
+-- last month.
 CREATE TABLE IF NOT EXISTS technicians (
-    id     TEXT PRIMARY KEY,
-    name   TEXT,
-    trade  TEXT,
-    active INTEGER NOT NULL DEFAULT 1
+    id      TEXT PRIMARY KEY,
+    name    TEXT,
+    trade   TEXT,
+    active  INTEGER NOT NULL DEFAULT 1,
+    label   TEXT UNIQUE,
+    is_self INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS manuals (
